@@ -2,7 +2,7 @@
 local INFO_PRE_MESSAGE = "[JOIST]: "
 
 -- private
-local function log(message, MessageArray)
+local function logInfo(message, MessageArray)
 	if MessageArray then
 		table.insert(MessageArray, message)
 
@@ -12,10 +12,193 @@ local function log(message, MessageArray)
 	print(INFO_PRE_MESSAGE .. message)
 end
 
+local function logError(message, MessageArray)
+	if MessageArray then
+		table.insert(MessageArray, message)
+
+		return MessageArray
+	end
+
+	warn(INFO_PRE_MESSAGE .. message)
+end
+
+local function doServerMethod(Server, methodName, ...)
+	local method = Server[methodName]
+	if method == nil then
+		return false, `Server has no method named "{methodName}"!`
+	end
+
+	local methodType = typeof(method)
+	if methodType ~= "function" then
+		return false, `Server.{methodName} is not a function! It's a {methodType}`
+	end
+
+	return pcall(method, Server, ...)
+end
+
+local function assertServerProperty(Server, propertyName, value)
+	local s, result = doServerMethod(Server, "Get" .. propertyName)
+	if not s then
+		return false, result
+	end
+
+	if result ~= value then -- TODO: fuzzy and custom equality operations
+		return false, `Server:Get{propertyName}() returned {result}, which isn't {value}!`
+	end
+
+	return true
+end
+
+local function setServerProperty(Server, propertyName, value)
+	local s, result = doServerMethod(Server, "Set" .. propertyName, value)
+	if not s then
+		return false, result
+	end
+
+	s, result = assertServerProperty(Server, propertyName, value)
+	if not s then
+		return false, `After calling Server:Set{propertyName}({value}), {result}`
+	end
+
+	return true
+end
+
+local function runTest(MessageArray, Api, testFunction)
+	local numTestConditions = 0
+	local numConditionsPassed = 0
+
+	local ObjectTypeToIndexToHandle = {} -- string objectType --> int index --> <any> objectHandle
+	local ObjectTypeToLastIndexCreated = {} -- string objectType --> int lastIndexCreated
+	local ObjectTypeToLastIndexRead = {} -- string objectType --> int lastIndexRead
+
+	local Server
+
+	-- testing API
+	local function newObjectOfType(objectTypeName, InitialState)
+		if not (typeof(objectTypeName) == "string") then
+			error(`{objectTypeName} is not a string!\n{debug.traceback()}`)
+		end
+		if not (typeof(InitialState) == "table") then
+			error(`{InitialState} is not a table!\n{debug.traceback()}`)
+		end
+
+		if objectTypeName == "Game" then
+			for propertyName, value in InitialState do
+				if not (typeof(propertyName) == "string") then
+					error(`{propertyName} is not a string! (in Object.{objectTypeName}[{propertyName}])`)
+				end
+
+				numTestConditions += 1
+
+				local s, errorMessage = setServerProperty(Server, propertyName, value)
+				if not s then
+					logError(errorMessage .. `\n{debug.traceback()}`, MessageArray)
+					continue
+				end
+
+				numConditionsPassed += 1
+			end
+
+			return
+		end
+
+		if objectTypeName == "Player" then
+			return
+		end
+
+		-- TODO: all other types
+	end
+
+	local function readObjectState(objectTypeName, objectId, ExpectedState)
+		if not (typeof(objectTypeName) == "string") then
+			error(`{objectTypeName} is not a string!\n{debug.traceback()}`)
+		end
+		if not (typeof(ExpectedState) == "table") then
+			error(`{ExpectedState} is not a table!\n{debug.traceback()}`)
+		end
+
+		if objectTypeName == "Game" then
+			for propertyName, value in ExpectedState do
+				if not (typeof(propertyName) == "string") then
+					error(`{propertyName} is not a string! (in Object.{objectTypeName}[{propertyName}])`)
+				end
+
+				numTestConditions += 1
+
+				local s, errorMessage = assertServerProperty(Server, propertyName, value)
+				if not s then
+					logError(errorMessage .. `\n{debug.traceback()}`, MessageArray)
+					continue
+				end
+
+				numConditionsPassed += 1
+			end
+
+			return
+		end
+	end
+
+	local function doAction(actionName, ...)
+		numTestConditions += 1
+
+		local s, result = doServerMethod(Server, actionName, ...)
+		if not s then
+			logError(result .. `\n{debug.traceback()}`, MessageArray)
+			return
+		end
+
+		numConditionsPassed += 1
+	end
+
+	-- testing interface objects
+	local Object = setmetatable({}, {
+		__index = function(_, objectTypeName)
+			return function(...)
+				return readObjectState(objectTypeName, nil, ...)
+			end
+		end,
+	})
+
+	local NewObject = setmetatable({}, {
+		__index = function(_, objectTypeName)
+			return function(...)
+				return newObjectOfType(objectTypeName, ...)
+			end
+		end,
+	})
+
+	local ServerAction = setmetatable({}, {
+		__index = function(_, actionName)
+			return function(...)
+				doAction(actionName, ...)
+			end
+		end,
+	})
+
+	-- run test
+	if typeof(Api.newServer) ~= "function" then
+		return -1, 0, `Game API has no method "newServer"!`
+	end
+
+	local s, result = pcall(Api.newServer)
+	if not s then
+		return -1, 0, `Game API newServer() threw error:\n{result}`
+	end
+
+	Server = result
+
+	s, result = pcall(testFunction, ServerAction, Object, NewObject)
+	local errorMessage = if not s then result else nil
+
+	return numTestConditions, numConditionsPassed, errorMessage
+end
+
 -- public
 local Joist = {}
 
 function Joist.runTests(ApiModuleScript, TestsFolder, Options)
+	-- TODO: refactor everything such that runTests() has a self state table to split everything into more sub methods
+
 	Options = Options or {}
 
 	if not (typeof(ApiModuleScript) == "Instance" and ApiModuleScript:IsA("ModuleScript")) then
@@ -29,17 +212,19 @@ function Joist.runTests(ApiModuleScript, TestsFolder, Options)
 	end
 
 	local MessageArray = if Options.OutputMode == "ReturnTable" then {} else nil
+	local ONLY_TEST_SPEC_MODULES = if Options.OnlyTestSpecModules == nil then true else Options.OnlyTestSpecModules
 
 	local success, Api = pcall(require, ApiModuleScript)
 	if not success then
-		return log(`Failed to require {ApiModuleScript} with error:\n{Api}\n{debug.traceback()}`, MessageArray)
+		return logError(`Failed to require {ApiModuleScript} with error:\n{Api}\n{debug.traceback()}`, MessageArray)
 	end
 
 	local numTestsRan = 0
 	local numTestsPassed = 0
+
 	for _, TestModuleScript in TestsFolder:GetChildren() do
 		local moduleName = TestModuleScript.Name
-		if string.sub(moduleName, moduleName:len() - 4, moduleName:len()) ~= ".spec" then
+		if ONLY_TEST_SPEC_MODULES and string.sub(moduleName, moduleName:len() - 4, moduleName:len()) ~= ".spec" then
 			continue
 		end
 
@@ -51,25 +236,52 @@ function Joist.runTests(ApiModuleScript, TestsFolder, Options)
 
 		local s, testFunction = pcall(require, TestModuleScript)
 		if not s then
-			log(`(#{numTestsRan}) Failed to require TestModule "{moduleName}" with error:\n{testFunction}`, MessageArray)
+			logError(
+				`(#{numTestsRan}) Failed to require TestModule "{moduleName}" with error:\n{testFunction}`,
+				MessageArray
+			)
 			continue
 		end
 
-		log(`(#{numTestsRan}) Test "{moduleName}" passed`, MessageArray)
-		numTestsPassed += 1
+		local totalConditions, passedConditions, errorMessage = runTest(MessageArray, Api, testFunction)
+		if errorMessage == nil and totalConditions == passedConditions then
+			logInfo(
+				`(#{numTestsRan}) Test "{moduleName}" passed! ({totalConditions} checks)`,
+				MessageArray
+			)
+			numTestsPassed += 1
+
+			continue
+		end
+
+		if errorMessage == nil then
+			logInfo(
+				`(#{numTestsRan}) Test "{moduleName}" failed ({passedConditions} checks correct, {totalConditions - passedConditions} checks failed)`,
+				MessageArray
+			)
+			continue
+		end
+
+		if totalConditions < 0 then
+			logError(`(#{numTestsRan}) Test "{moduleName}" failed with error:\n{errorMessage}`, MessageArray)
+			continue
+		end
+
+		logError(
+			`(#{numTestsRan}) Test "{moduleName}" passed {passedConditions} / {totalConditions} conditions and failed to complete with error:\n{errorMessage}`,
+			MessageArray
+		)
 	end
 
 	if numTestsRan <= 0 then
-		return log(`No tests to run!`, MessageArray)
+		return numTestsRan, numTestsPassed, logInfo(`No tests to run!`, MessageArray)
 	end
 
-	log(`{numTestsPassed} / {numTestsRan} tests passed`, MessageArray)
+	logInfo(`{numTestsPassed} / {numTestsRan} tests passed`, MessageArray)
 
-	return MessageArray
+	return numTestsRan, numTestsPassed, MessageArray
 end
 
-function Joist.initializeJoist()
-
-end
+function Joist.initializeJoist() end
 
 return Joist
