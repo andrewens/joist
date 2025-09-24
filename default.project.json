@@ -1,0 +1,16 @@
+{
+  "name": "joist",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "$path": "src/ReplicatedStorage"
+    },
+
+    "ServerScriptService": {
+      "Main": {
+        "$path": "src/ServerScriptService"
+      }
+    }
+  }
+}
