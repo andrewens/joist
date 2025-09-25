@@ -63,119 +63,97 @@ local function setServerProperty(Server, propertyName, value)
 	return true
 end
 
+-- testing API
+local function newObjectOfType(TestState, objectTypeName, InitialState)
+	if not (typeof(objectTypeName) == "string") then
+		error(`{objectTypeName} is not a string!\n{debug.traceback()}`)
+	end
+	if not (typeof(InitialState) == "table") then
+		error(`{InitialState} is not a table!\n{debug.traceback()}`)
+	end
+
+	if objectTypeName == "Game" then
+		for propertyName, value in InitialState do
+			if not (typeof(propertyName) == "string") then
+				error(`{propertyName} is not a string! (in Object.{objectTypeName}[{propertyName}])`)
+			end
+
+			TestState.numTestConditions += 1
+
+			local s, errorMessage = setServerProperty(TestState.Server, propertyName, value)
+			if not s then
+				logError(errorMessage .. `\n{debug.traceback()}`, TestState.MessageArray)
+				continue
+			end
+
+			TestState.numConditionsPassed += 1
+		end
+
+		return
+	end
+
+	if objectTypeName == "Player" then
+		return
+	end
+
+	-- TODO: all other types
+end
+
+local function readObjectState(TestState, objectTypeName, objectId, ExpectedState)
+	if not (typeof(objectTypeName) == "string") then
+		error(`{objectTypeName} is not a string!\n{debug.traceback()}`)
+	end
+	if not (typeof(ExpectedState) == "table") then
+		error(`{ExpectedState} is not a table!\n{debug.traceback()}`)
+	end
+
+	if objectTypeName == "Game" then
+		for propertyName, value in ExpectedState do
+			if not (typeof(propertyName) == "string") then
+				error(`{propertyName} is not a string! (in Object.{objectTypeName}[{propertyName}])`)
+			end
+
+			TestState.numTestConditions += 1
+
+			local s, errorMessage = assertServerProperty(TestState.Server, propertyName, value)
+			if not s then
+				logError(errorMessage .. `\n{debug.traceback()}`, TestState.MessageArray)
+				continue
+			end
+
+			TestState.numConditionsPassed += 1
+		end
+
+		return
+	end
+end
+
+local function doAction(TestState, actionName, ...)
+	TestState.numTestConditions += 1
+
+	local s, result = doServerMethod(TestState.Server, actionName, ...)
+	if not s then
+		logError(result .. `\n{debug.traceback()}`, TestState.MessageArray)
+		return
+	end
+
+	TestState.numConditionsPassed += 1
+end
+
 local function runTest(MessageArray, Api, testFunction)
-	local numTestConditions = 0
-	local numConditionsPassed = 0
+	-- test state
+	local TestState = {}
 
-	local ObjectTypeToIndexToHandle = {} -- string objectType --> int index --> <any> objectHandle
-	local ObjectTypeToLastIndexCreated = {} -- string objectType --> int lastIndexCreated
-	local ObjectTypeToLastIndexRead = {} -- string objectType --> int lastIndexRead
+	TestState.numTestConditions = 0
+	TestState.numConditionsPassed = 0
 
-	local Server
+	TestState.ObjectTypeToIndexToHandle = {} -- string objectType --> int index --> <any> objectHandle
+	TestState.ObjectTypeToLastIndexCreated = {} -- string objectType --> int lastIndexCreated
+	TestState.ObjectTypeToLastIndexRead = {} -- string objectType --> int lastIndexRead
 
-	-- testing API
-	local function newObjectOfType(objectTypeName, InitialState)
-		if not (typeof(objectTypeName) == "string") then
-			error(`{objectTypeName} is not a string!\n{debug.traceback()}`)
-		end
-		if not (typeof(InitialState) == "table") then
-			error(`{InitialState} is not a table!\n{debug.traceback()}`)
-		end
+	TestState.MessageArray = MessageArray
 
-		if objectTypeName == "Game" then
-			for propertyName, value in InitialState do
-				if not (typeof(propertyName) == "string") then
-					error(`{propertyName} is not a string! (in Object.{objectTypeName}[{propertyName}])`)
-				end
-
-				numTestConditions += 1
-
-				local s, errorMessage = setServerProperty(Server, propertyName, value)
-				if not s then
-					logError(errorMessage .. `\n{debug.traceback()}`, MessageArray)
-					continue
-				end
-
-				numConditionsPassed += 1
-			end
-
-			return
-		end
-
-		if objectTypeName == "Player" then
-			return
-		end
-
-		-- TODO: all other types
-	end
-
-	local function readObjectState(objectTypeName, objectId, ExpectedState)
-		if not (typeof(objectTypeName) == "string") then
-			error(`{objectTypeName} is not a string!\n{debug.traceback()}`)
-		end
-		if not (typeof(ExpectedState) == "table") then
-			error(`{ExpectedState} is not a table!\n{debug.traceback()}`)
-		end
-
-		if objectTypeName == "Game" then
-			for propertyName, value in ExpectedState do
-				if not (typeof(propertyName) == "string") then
-					error(`{propertyName} is not a string! (in Object.{objectTypeName}[{propertyName}])`)
-				end
-
-				numTestConditions += 1
-
-				local s, errorMessage = assertServerProperty(Server, propertyName, value)
-				if not s then
-					logError(errorMessage .. `\n{debug.traceback()}`, MessageArray)
-					continue
-				end
-
-				numConditionsPassed += 1
-			end
-
-			return
-		end
-	end
-
-	local function doAction(actionName, ...)
-		numTestConditions += 1
-
-		local s, result = doServerMethod(Server, actionName, ...)
-		if not s then
-			logError(result .. `\n{debug.traceback()}`, MessageArray)
-			return
-		end
-
-		numConditionsPassed += 1
-	end
-
-	-- testing interface objects
-	local Object = setmetatable({}, {
-		__index = function(_, objectTypeName)
-			return function(...)
-				return readObjectState(objectTypeName, nil, ...)
-			end
-		end,
-	})
-
-	local NewObject = setmetatable({}, {
-		__index = function(_, objectTypeName)
-			return function(...)
-				return newObjectOfType(objectTypeName, ...)
-			end
-		end,
-	})
-
-	local ServerAction = setmetatable({}, {
-		__index = function(_, actionName)
-			return function(...)
-				doAction(actionName, ...)
-			end
-		end,
-	})
-
-	-- run test
+	-- load server
 	if typeof(Api.newServer) ~= "function" then
 		return -1, 0, `Game API has no method "newServer"!`
 	end
@@ -185,20 +163,44 @@ local function runTest(MessageArray, Api, testFunction)
 		return -1, 0, `Game API newServer() threw error:\n{result}`
 	end
 
-	Server = result
+	TestState.Server = result
 
+	-- testing interface objects
+	local Object = setmetatable({}, {
+		__index = function(_, objectTypeName)
+			return function(...)
+				return readObjectState(TestState, objectTypeName, nil, ...)
+			end
+		end,
+	})
+
+	local NewObject = setmetatable({}, {
+		__index = function(_, objectTypeName)
+			return function(...)
+				return newObjectOfType(TestState, objectTypeName, ...)
+			end
+		end,
+	})
+
+	local ServerAction = setmetatable({}, {
+		__index = function(_, actionName)
+			return function(...)
+				doAction(TestState, actionName, ...)
+			end
+		end,
+	})
+
+	-- run test
 	s, result = pcall(testFunction, ServerAction, Object, NewObject)
 	local errorMessage = if not s then result else nil
 
-	return numTestConditions, numConditionsPassed, errorMessage
+	return TestState.numTestConditions, TestState.numConditionsPassed, errorMessage
 end
 
 -- public
 local Joist = {}
 
 function Joist.runTests(ApiModuleScript, TestsFolder, Options)
-	-- TODO: refactor everything such that runTests() has a self state table to split everything into more sub methods
-
 	Options = Options or {}
 
 	if not (typeof(ApiModuleScript) == "Instance" and ApiModuleScript:IsA("ModuleScript")) then
@@ -245,10 +247,7 @@ function Joist.runTests(ApiModuleScript, TestsFolder, Options)
 
 		local totalConditions, passedConditions, errorMessage = runTest(MessageArray, Api, testFunction)
 		if errorMessage == nil and totalConditions == passedConditions then
-			logInfo(
-				`(#{numTestsRan}) Test "{moduleName}" passed! ({totalConditions} checks)`,
-				MessageArray
-			)
+			logInfo(`(#{numTestsRan}) Test "{moduleName}" passed! ({totalConditions} checks)`, MessageArray)
 			numTestsPassed += 1
 
 			continue
