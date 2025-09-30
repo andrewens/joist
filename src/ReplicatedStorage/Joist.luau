@@ -154,40 +154,61 @@ local function assertServerProperty(Server, propertyName, value)
 	return true
 end
 
-local function assertObjectProperty(Server, objectId, objectTypeName, propertyName, value)
-	local s, result = doServerMethod(Server, "Get" .. objectTypeName .. propertyName, objectId)
-	if not s then
-		return false, result
-	end
-
-	if typeof(value) == "function" then
-		local s2, errorMessage = value(result)
+local function isEqual(expectedValue, actualValue, methodString)
+	if typeof(expectedValue) == "function" then
+		local s2, errorMessage = expectedValue(actualValue)
 		if not s2 then
-			return false,
-				`Server:Get{objectTypeName}{propertyName}({argsToString(objectId)}) returned {argsToString(result)}, which {errorMessage}`
+			return false, `{methodString} returned {argsToString(actualValue)}, which {errorMessage}`
 		end
 
 		return true
 	end
 
-	--[[ TODO: will turn objectIds into object names later
-	local objectName = `<{objectTypeName}>`
-	local nameErrorMessage = ""
+	if actualValue ~= expectedValue then -- TODO: fuzzy and custom equality operations
+		return false, `{methodString} returned {argsToString(actualValue)}, which isn't {argsToString(expectedValue)}!` --{nameErrorMessage}`
+	end
 
-	local s3, result3 = doServerMethod(Server, "ObjectToString", objectId) -- TODO: this doesn't count as a condition
-	if s3 then
-		if result3 == nil then
-			nameErrorMessage = `\n\n(Server:ObjectToString({argsToString(objectId)}) returned nil)\n`
-		else
-			objectName = result3 
+	return true
+end
+
+local function assertObjectPropertyOnClient(Client, objectId, objectTypeName, propertyName, expectedValue)
+	local getterMethodName = "Get" .. objectTypeName .. propertyName
+	local s, result = doClientMethod(Client, getterMethodName, objectId)
+	if not s then
+		return false, result
+	end
+
+	local getterMethodNameWithArgs = getterMethodName .. "(" .. argsToString(objectId) .. ")"
+	s, result = isEqual(expectedValue, result, `Client:{getterMethodNameWithArgs}`)
+	if not s then
+		return false, result
+	end
+
+	return true
+end
+
+local function assertObjectProperty(TestState, objectId, objectTypeName, propertyName, expectedValue)
+	local getterMethodName = "Get" .. objectTypeName .. propertyName
+	local s, result = doServerMethod(TestState.Server, getterMethodName, objectId)
+	if not s then
+		return false, result
+	end
+
+	-- TODO: support printing object names or metadata or something
+	-- property must be same on Server
+	local getterMethodNameWithArgs = getterMethodName .. "(" .. argsToString(objectId) .. ")"
+	s, result = isEqual(expectedValue, result, `Server:{getterMethodNameWithArgs}`)
+	if not s then
+		return false, result
+	end
+
+	-- TODO: will need to support Server-only or Client-only states at some point
+	-- property must be same on all Clients
+	for i, Client in TestState.Clients do
+		s, result = assertObjectPropertyOnClient(Client, objectId, objectTypeName, propertyName, expectedValue)
+		if not s then
+			return false, result
 		end
-	else
-		nameErrorMessage = `\n\n({result3})\n`
-	end--]]
-
-	if result ~= value then -- TODO: fuzzy and custom equality operations
-		return false,
-			`Server:Get{objectTypeName}{propertyName}({objectId}) returned {argsToString(result)}, which isn't {argsToString(value)}!` --{nameErrorMessage}`
 	end
 
 	return true
@@ -207,13 +228,13 @@ local function setServerProperty(Server, propertyName, value)
 	return true
 end
 
-local function setObjectProperty(Server, objectId, objectTypeName, propertyName, value)
-	local s, result = doServerMethod(Server, "Set" .. objectTypeName .. propertyName, objectId, value)
+local function setObjectProperty(TestState, objectId, objectTypeName, propertyName, value)
+	local s, result = doServerMethod(TestState.Server, "Set" .. objectTypeName .. propertyName, objectId, value)
 	if not s then
 		return false, result
 	end
 
-	s, result = assertObjectProperty(Server, objectId, objectTypeName, propertyName, value)
+	s, result = assertObjectProperty(TestState, objectId, objectTypeName, propertyName, value)
 	if not s then
 		local huh = argsToString(objectId, value)
 		print("HUH?", huh, "|", objectId, value)
@@ -236,7 +257,30 @@ local function createNewObject(Server, objectTypeName, ...)
 	return true, result
 end
 
-local function callFunctionAndCountAsCheck(TestState: table, method: () -> any, ...)
+local function doCheck(TestState, condition, errorMessage)
+	if not (typeof(TestState) == "table" and TestState.numTestConditions and TestState.numConditionsPassed) then
+		error(`{TestState} is not a TestState!\n{debug.traceback()}`)
+	end
+	if not (typeof(condition) == "boolean") then
+		error(`{condition} is not a boolean!`)
+	end
+	if not (typeof(errorMessage) == "string") then
+		error(`{errorMessage} is not a string!`)
+	end
+
+	TestState.numTestConditions += 1
+
+	if not condition then
+		logError(errorMessage, TestState.MessageArray)
+		return false
+	end
+
+	TestState.numConditionsPassed += 1
+
+	return true
+end
+
+local function callFunctionAndDoCheck(TestState: table, method: () -> any, ...)
 	if not (typeof(TestState) == "table" and TestState.numTestConditions and TestState.numConditionsPassed) then
 		error(`{TestState} is not a TestState!\n{debug.traceback()}`)
 	end
@@ -246,7 +290,7 @@ local function callFunctionAndCountAsCheck(TestState: table, method: () -> any, 
 
 	TestState.numTestConditions += 1
 
-	--local s, result = setObjectProperty(TestState.Server, NewObject, objectTypeName, propertyName, value)
+	--local s, result = setObjectProperty(TestState, NewObject, objectTypeName, propertyName, value)
 	local s, result = method(...)
 	if not s then
 		logError(result .. "\n" .. debug.traceback(), TestState.MessageArray)
@@ -281,7 +325,7 @@ local function newObjectOfType(TestState, objectTypeName, InitialState)
 	-- an objectTypeName of "Game" just refers to the root server's state
 	if objectTypeName == "Game" then
 		for propertyName, value in InitialState do
-			callFunctionAndCountAsCheck(TestState, setServerProperty, TestState.Server, propertyName, value)
+			callFunctionAndDoCheck(TestState, setServerProperty, TestState.Server, propertyName, value)
 		end
 
 		return
@@ -297,7 +341,8 @@ local function newObjectOfType(TestState, objectTypeName, InitialState)
 			error(`Attempt to create Player Object with no UserId property: {argsToString(InitialState.UserId)}`)
 		end
 
-		local s, result = callFunctionAndCountAsCheck(TestState, doGameApiMethod, TestState.Api, "newClient", {
+		-- create new Client object
+		local s, NewClient = callFunctionAndDoCheck(TestState, doGameApiMethod, TestState.Api, "newClient", {
 			Name = InitialState.Name,
 			UserId = InitialState.UserId,
 		})
@@ -305,74 +350,66 @@ local function newObjectOfType(TestState, objectTypeName, InitialState)
 			return
 		end
 
+		-- TODO: maybe test that client has default server state
 		-- TODO: maybe it makes sense to test that the player doesn't already exist on the server
 
-		local Client = result
+		-- connect Client to Server
+		local s2, serverId = callFunctionAndDoCheck(TestState, doServerMethod, TestState.Server, "GetServerId")
+		if not s2 then
+			return
+		end
 
-		s, result = callFunctionAndCountAsCheck(TestState, doServerMethod, TestState.Server, "GetServerId")
+		local s3, successfullyConnected =
+			callFunctionAndDoCheck(TestState, doClientMethod, NewClient, "ConnectToServer", serverId)
 		if not s then
 			return
 		end
 
-		local serverId = result
-
-		s, result = callFunctionAndCountAsCheck(TestState, doClientMethod, Client, "ConnectToServer", serverId)
-		if not s then
+		local s4 = doCheck(
+			TestState,
+			successfullyConnected,
+			`Client(UserId = {InitialState.UserId}) failed to connect to server`
+		)
+		if not s4 then
 			return
 		end
 
-		table.insert(TestState.Clients, Client)
+		table.insert(TestState.Clients, NewClient)
 
-		s, result = callFunctionAndCountAsCheck(TestState, doClientMethod, Client, "GetLocalPlayerObjectId")
-		if not s then
+		-- after creating Client, a Player object must have been created and replicated to all Clients connected to the Server
+		local s5, playerId = callFunctionAndDoCheck(TestState, doClientMethod, NewClient, "GetLocalPlayerObjectId")
+		if not s5 then
 			return
 		end
 
-		local playerId = result
-
-		-- TODO: check that Player exists on Server and all other Clients after doing this
-		-- TODO: check that previous clients' players exist on the new client!
-
-		-- must be a Player object on Server with same user id and player name
-		callFunctionAndCountAsCheck(
+		callFunctionAndDoCheck(
 			TestState,
 			assertObjectProperty,
-			TestState.Server,
+			TestState,
 			playerId,
 			"Player",
 			"UserId",
 			InitialState.UserId
 		)
-		callFunctionAndCountAsCheck(
+		callFunctionAndDoCheck(
 			TestState,
 			assertObjectProperty,
-			TestState.Server,
+			TestState,
 			playerId,
 			"Player",
 			"Name",
 			InitialState.Name
 		)
 
-		-- new Player object must have been replicated to all the Clients
-		--for i, OtherClient in TestState.Clients do
-		--	callFunctionAndCountAsCheck(
-		--		
-		--	)
-		--end
-
-		-- there must be a resulting Player object on the Server AND ALL THE OTHER CLIENTS
-		-- (and it must have same UserId and Name)
-		TestState.Server:GetPlayerName()
-
 		-- and then we set properties for anything other than Name or UserId
 		InitialState.Name = nil
 		InitialState.UserId = nil
 
 		for propertyName, value in InitialState do
-			callFunctionAndCountAsCheck(
+			callFunctionAndDoCheck(
 				TestState,
 				setObjectProperty,
-				TestState.Server,
+				TestState,
 				playerId,
 				objectTypeName,
 				propertyName,
@@ -380,12 +417,58 @@ local function newObjectOfType(TestState, objectTypeName, InitialState)
 			)
 		end
 
+		-- all previous Clients' Players must exist on the new Client
+		for _, OtherClient in TestState.Clients do
+			if OtherClient == NewClient then
+				continue
+			end
+
+			local s10, otherPlayerObjectId =
+				callFunctionAndDoCheck(TestState, doClientMethod, OtherClient, "GetLocalPlayerObjectId")
+			if not s10 then
+				continue
+			end
+
+			local s11, otherPlayerUserId =
+				callFunctionAndDoCheck(TestState, doClientMethod, OtherClient, "GetLocalPlayerUserId")
+			if not s11 then
+				continue
+			end
+
+			local s12, otherPlayerUserName =
+				callFunctionAndDoCheck(TestState, doClientMethod, OtherClient, "GetLocalPlayerName")
+			if not s12 then
+				continue
+			end
+
+			callFunctionAndDoCheck(
+				TestState,
+				assertObjectPropertyOnClient,
+				NewClient,
+				otherPlayerObjectId,
+				objectTypeName,
+				"UserId",
+				otherPlayerUserId
+			)
+
+			callFunctionAndDoCheck(
+				TestState,
+				assertObjectPropertyOnClient,
+				NewClient,
+				otherPlayerObjectId,
+				objectTypeName,
+				"Name",
+				otherPlayerUserName
+			)
+		end
+
+		-- TODO: test that Server state has been replicated to client (requires API design manifest to loop over what server state there is)
+
 		return
 	end
 
 	-- building standard objects
-	local s, result =
-		callFunctionAndCountAsCheck(TestState, createNewObject, TestState.Server, objectTypeName, "hi mom!")
+	local s, result = callFunctionAndDoCheck(TestState, createNewObject, TestState.Server, objectTypeName, "hi mom!")
 	if not s then
 		TestState.numTestConditions += countDictionary(InitialState)
 		return
@@ -394,10 +477,10 @@ local function newObjectOfType(TestState, objectTypeName, InitialState)
 	local newObjectId = result
 
 	for propertyName, value in InitialState do
-		callFunctionAndCountAsCheck(
+		callFunctionAndDoCheck(
 			TestState,
 			setObjectProperty,
-			TestState.Server,
+			TestState,
 			newObjectId,
 			objectTypeName,
 			propertyName,
@@ -407,10 +490,10 @@ local function newObjectOfType(TestState, objectTypeName, InitialState)
 
 	-- all standard objects must have a Name property!
 	if InitialState.Name == nil then
-		callFunctionAndCountAsCheck(
+		callFunctionAndDoCheck(
 			TestState,
 			assertObjectProperty,
-			TestState.Server,
+			TestState,
 			newObjectId,
 			objectTypeName,
 			"Name",
