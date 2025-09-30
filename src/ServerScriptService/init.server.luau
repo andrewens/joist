@@ -9,7 +9,10 @@ TestEZ.TestBootstrap:run({ TestsFolder })
 
 print()
 
-Joist.runTests(TestsFolder["Test1.spec"].MockApis.Api3, TestsFolder["Test1.spec"].MockTests, {
+local LiveTestFolder = TestsFolder["SimplestPossibleTestWithPlayers.spec"]
+local LiveTestApi = LiveTestFolder.MockApis.Api1
+local LiveTestMockTestsFolder = LiveTestFolder.MockTests
+
+Joist.runTests(LiveTestApi, LiveTestMockTestsFolder, {
     OnlyTestSpecModules =  false,
 })
-

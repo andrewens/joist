@@ -2,6 +2,68 @@
 local INFO_PRE_MESSAGE = "[JOIST]: "
 
 -- private
+local function countDictionary(t)
+	local c = 0
+	for k, v in t do
+		c += 1
+	end
+
+	return c
+end
+
+local function argToString(v)
+	if typeof(v) == "string" then
+		local quoteType = if string.find(v, '"') then "'" else '"'
+		return quoteType .. v .. quoteType
+	end
+
+	return tostring(v)
+end
+
+local function argsToString(...) -- TODO: idk if there's a better way to do this lol
+	local a1, a2, a3, a4, a5, a6 = ...
+
+	if a6 == nil and a5 == nil and a4 == nil and a3 == nil and a2 == nil then
+		return argToString(a1)
+	end
+
+	if a6 == nil and a5 == nil and a4 == nil and a3 == nil then
+		return argToString(a1) .. ", " .. argToString(a2)
+	end
+
+	if a6 == nil and a5 == nil and a4 == nil then
+		return argToString(a1) .. ", " .. argToString(a2) .. ", " .. argToString(a3)
+	end
+
+	if a6 == nil and a5 == nil then
+		return argToString(a1) .. ", " .. argToString(a2) .. ", " .. argToString(a3) .. ", " .. argToString(a4)
+	end
+
+	if a6 == nil then
+		return argToString(a1)
+			.. ", "
+			.. argToString(a2)
+			.. ", "
+			.. argToString(a3)
+			.. ", "
+			.. argToString(a4)
+			.. ", "
+			.. argToString(a5)
+	end
+
+	return argToString(a1)
+		.. ", "
+		.. argToString(a2)
+		.. ", "
+		.. argToString(a3)
+		.. ", "
+		.. argToString(a4)
+		.. ", "
+		.. argToString(a5)
+		.. ", "
+		.. argToString(a6)
+end
+
 local function logInfo(message, MessageArray)
 	if MessageArray then
 		table.insert(MessageArray, message)
@@ -22,28 +84,110 @@ local function logError(message, MessageArray)
 	warn(INFO_PRE_MESSAGE .. message)
 end
 
-local function doServerMethod(Server, methodName, ...)
-	local method = Server[methodName]
+local function doMethod(Interface: table, interfaceName: string, methodName: string, ...)
+	-- guards
+	if not (typeof(Interface) == "table") then
+		error(`{Interface} is not a table!\n{debug.traceback()}`)
+	end
+	if not (typeof(interfaceName) == "string") then
+		error(`{interfaceName} is not a string!\n{debug.traceback()}`)
+	end
+	if not (typeof(methodName) == "string") then
+		error(`{methodName} is not a string!\n{debug.traceback()}`)
+	end
+
+	-- stuff
+	local method = Interface[methodName]
 	if method == nil then
-		return false, `Server has no method named "{methodName}"!`
+		return false, `{interfaceName} has no method named "{methodName}"!`
 	end
 
 	local methodType = typeof(method)
 	if methodType ~= "function" then
-		return false, `Server.{methodName} is not a function! It's a {methodType}`
+		return false, `{interfaceName}.{methodName} is not a function! It's a {methodType}`
 	end
 
-	return pcall(method, Server, ...)
+	local s, result, r2, r3, r4 = pcall(method, ...)
+	if not s then
+		local firstArg = ...
+		local dot = if firstArg == Interface then ":" else "."
+		return false, `{interfaceName}{dot}{methodName}({argsToString(...)}) threw error:\n{result}`
+	end
+
+	return s, result, r2, r3, r4
+end
+
+local function doGameApiMethod(Api, methodName, ...)
+	return doMethod(Api, "GameAPI", methodName, ...)
+end
+
+local function doServerMethod(Server, methodName, ...)
+	return doMethod(Server, "Server", methodName, Server, ...)
+end
+
+local function doClientMethod(Client, methodName, ...)
+	return doMethod(Client, "Client", methodName, Client, ...)
 end
 
 local function assertServerProperty(Server, propertyName, value)
+	-- @param: value can be a function of the property, returning boolean if it's correct and an error message string
+	-- 			(the error message should complete the phrase "Server:Get{propertyName}() returned {result}, which")
+
 	local s, result = doServerMethod(Server, "Get" .. propertyName)
 	if not s then
 		return false, result
 	end
 
+	if typeof(value) == "function" then
+		local s2, errorMessage = value(result)
+		if not s2 then
+			return false, `Server:Get{propertyName}() returned {argsToString(result)}, which {errorMessage}`
+		end
+
+		return true
+	end
+
 	if result ~= value then -- TODO: fuzzy and custom equality operations
-		return false, `Server:Get{propertyName}() returned {result}, which isn't {value}!`
+		return false, `Server:Get{propertyName}() returned {argsToString(result)}, which isn't {argsToString(value)}!`
+	end
+
+	return true
+end
+
+local function assertObjectProperty(Server, objectId, objectTypeName, propertyName, value)
+	local s, result = doServerMethod(Server, "Get" .. objectTypeName .. propertyName, objectId)
+	if not s then
+		return false, result
+	end
+
+	if typeof(value) == "function" then
+		local s2, errorMessage = value(result)
+		if not s2 then
+			return false,
+				`Server:Get{objectTypeName}{propertyName}({argsToString(objectId)}) returned {argsToString(result)}, which {errorMessage}`
+		end
+
+		return true
+	end
+
+	--[[ TODO: will turn objectIds into object names later
+	local objectName = `<{objectTypeName}>`
+	local nameErrorMessage = ""
+
+	local s3, result3 = doServerMethod(Server, "ObjectToString", objectId) -- TODO: this doesn't count as a condition
+	if s3 then
+		if result3 == nil then
+			nameErrorMessage = `\n\n(Server:ObjectToString({argsToString(objectId)}) returned nil)\n`
+		else
+			objectName = result3 
+		end
+	else
+		nameErrorMessage = `\n\n({result3})\n`
+	end--]]
+
+	if result ~= value then -- TODO: fuzzy and custom equality operations
+		return false,
+			`Server:Get{objectTypeName}{propertyName}({objectId}) returned {argsToString(result)}, which isn't {argsToString(value)}!` --{nameErrorMessage}`
 	end
 
 	return true
@@ -57,10 +201,65 @@ local function setServerProperty(Server, propertyName, value)
 
 	s, result = assertServerProperty(Server, propertyName, value)
 	if not s then
-		return false, `After calling Server:Set{propertyName}({value}), {result}`
+		return false, `After calling Server:Set{propertyName}({argsToString(value)}), {result}`
 	end
 
 	return true
+end
+
+local function setObjectProperty(Server, objectId, objectTypeName, propertyName, value)
+	local s, result = doServerMethod(Server, "Set" .. objectTypeName .. propertyName, objectId, value)
+	if not s then
+		return false, result
+	end
+
+	s, result = assertObjectProperty(Server, objectId, objectTypeName, propertyName, value)
+	if not s then
+		local huh = argsToString(objectId, value)
+		print("HUH?", huh, "|", objectId, value)
+		return false, `After calling Server:Set{objectTypeName}{propertyName}({huh}), {result}`
+	end
+
+	return true
+end
+
+local function createNewObject(Server, objectTypeName, ...)
+	local s, result = doServerMethod(Server, "NewObject", objectTypeName, ...)
+	if not s then
+		return false, result
+	end
+
+	if result == nil then
+		return false, `Server:NewObject("{objectTypeName}") returned nil!`
+	end
+
+	return true, result
+end
+
+local function callFunctionAndCountAsCheck(TestState: table, method: () -> any, ...)
+	if not (typeof(TestState) == "table" and TestState.numTestConditions and TestState.numConditionsPassed) then
+		error(`{TestState} is not a TestState!\n{debug.traceback()}`)
+	end
+	if not (typeof(method) == "function") then
+		error(`{method} is not a function!\n{debug.traceback()}`)
+	end
+
+	TestState.numTestConditions += 1
+
+	--local s, result = setObjectProperty(TestState.Server, NewObject, objectTypeName, propertyName, value)
+	local s, result = method(...)
+	if not s then
+		logError(result .. "\n" .. debug.traceback(), TestState.MessageArray)
+		return false
+	end
+
+	TestState.numConditionsPassed += 1
+
+	return true, result
+end
+
+local function isString(objectProperty)
+	return typeof(objectProperty) == "string", "isn't a string"
 end
 
 -- testing API
@@ -72,31 +271,152 @@ local function newObjectOfType(TestState, objectTypeName, InitialState)
 		error(`{InitialState} is not a table!\n{debug.traceback()}`)
 	end
 
+	-- all keys in InitialState must be strings
+	for propertyName, value in InitialState do
+		if not (typeof(propertyName) == "string") then
+			error(`{propertyName} is not a string! (in Object.{objectTypeName}[{propertyName}])`)
+		end
+	end
+
+	-- an objectTypeName of "Game" just refers to the root server's state
 	if objectTypeName == "Game" then
 		for propertyName, value in InitialState do
-			if not (typeof(propertyName) == "string") then
-				error(`{propertyName} is not a string! (in Object.{objectTypeName}[{propertyName}])`)
-			end
-
-			TestState.numTestConditions += 1
-
-			local s, errorMessage = setServerProperty(TestState.Server, propertyName, value)
-			if not s then
-				logError(errorMessage .. `\n{debug.traceback()}`, TestState.MessageArray)
-				continue
-			end
-
-			TestState.numConditionsPassed += 1
+			callFunctionAndCountAsCheck(TestState, setServerProperty, TestState.Server, propertyName, value)
 		end
 
 		return
 	end
 
+	-- build clients for every player
 	if objectTypeName == "Player" then
+		-- Clients must receive a Name and UserId for the player they are wrapping
+		if not (typeof(InitialState.Name) == "string") then
+			error(`Attempt to create Player Object with no Name property: {argsToString(InitialState.Name)}`)
+		end
+		if not (typeof(InitialState.UserId) == "number") then
+			error(`Attempt to create Player Object with no UserId property: {argsToString(InitialState.UserId)}`)
+		end
+
+		local s, result = callFunctionAndCountAsCheck(TestState, doGameApiMethod, TestState.Api, "newClient", {
+			Name = InitialState.Name,
+			UserId = InitialState.UserId,
+		})
+		if not s then
+			return
+		end
+
+		-- TODO: maybe it makes sense to test that the player doesn't already exist on the server
+
+		local Client = result
+
+		s, result = callFunctionAndCountAsCheck(TestState, doServerMethod, TestState.Server, "GetServerId")
+		if not s then
+			return
+		end
+
+		local serverId = result
+
+		s, result = callFunctionAndCountAsCheck(TestState, doClientMethod, Client, "ConnectToServer", serverId)
+		if not s then
+			return
+		end
+
+		table.insert(TestState.Clients, Client)
+
+		s, result = callFunctionAndCountAsCheck(TestState, doClientMethod, Client, "GetLocalPlayerObjectId")
+		if not s then
+			return
+		end
+
+		local playerId = result
+
+		-- TODO: check that Player exists on Server and all other Clients after doing this
+		-- TODO: check that previous clients' players exist on the new client!
+
+		-- must be a Player object on Server with same user id and player name
+		callFunctionAndCountAsCheck(
+			TestState,
+			assertObjectProperty,
+			TestState.Server,
+			playerId,
+			"Player",
+			"UserId",
+			InitialState.UserId
+		)
+		callFunctionAndCountAsCheck(
+			TestState,
+			assertObjectProperty,
+			TestState.Server,
+			playerId,
+			"Player",
+			"Name",
+			InitialState.Name
+		)
+
+		-- new Player object must have been replicated to all the Clients
+		--for i, OtherClient in TestState.Clients do
+		--	callFunctionAndCountAsCheck(
+		--		
+		--	)
+		--end
+
+		-- there must be a resulting Player object on the Server AND ALL THE OTHER CLIENTS
+		-- (and it must have same UserId and Name)
+		TestState.Server:GetPlayerName()
+
+		-- and then we set properties for anything other than Name or UserId
+		InitialState.Name = nil
+		InitialState.UserId = nil
+
+		for propertyName, value in InitialState do
+			callFunctionAndCountAsCheck(
+				TestState,
+				setObjectProperty,
+				TestState.Server,
+				playerId,
+				objectTypeName,
+				propertyName,
+				value
+			)
+		end
+
 		return
 	end
 
-	-- TODO: all other types
+	-- building standard objects
+	local s, result =
+		callFunctionAndCountAsCheck(TestState, createNewObject, TestState.Server, objectTypeName, "hi mom!")
+	if not s then
+		TestState.numTestConditions += countDictionary(InitialState)
+		return
+	end
+
+	local newObjectId = result
+
+	for propertyName, value in InitialState do
+		callFunctionAndCountAsCheck(
+			TestState,
+			setObjectProperty,
+			TestState.Server,
+			newObjectId,
+			objectTypeName,
+			propertyName,
+			value
+		)
+	end
+
+	-- all standard objects must have a Name property!
+	if InitialState.Name == nil then
+		callFunctionAndCountAsCheck(
+			TestState,
+			assertObjectProperty,
+			TestState.Server,
+			newObjectId,
+			objectTypeName,
+			"Name",
+			isString
+		)
+	end
 end
 
 local function readObjectState(TestState, objectTypeName, objectId, ExpectedState)
@@ -152,15 +472,13 @@ local function runTest(MessageArray, Api, testFunction)
 	TestState.ObjectTypeToLastIndexRead = {} -- string objectType --> int lastIndexRead
 
 	TestState.MessageArray = MessageArray
+	TestState.Clients = {} -- int i --> Client
+	TestState.Api = Api
 
 	-- load server
-	if typeof(Api.newServer) ~= "function" then
-		return -1, 0, `Game API has no method "newServer"!`
-	end
-
-	local s, result = pcall(Api.newServer)
+	local s, result = doGameApiMethod(Api, "newServer")
 	if not s then
-		return -1, 0, `Game API newServer() threw error:\n{result}`
+		return -1, 0, result
 	end
 
 	TestState.Server = result
