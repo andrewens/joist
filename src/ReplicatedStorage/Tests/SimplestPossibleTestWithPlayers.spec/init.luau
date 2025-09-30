@@ -15,8 +15,7 @@ return function()
 			assert(numTests == 1)
 			assert(numSucceeded == 1)
 		end)
-        --[[
-		it("Fails if the state is not correct", function()
+		it("Fails if old Players are not replicated to new Clients", function()
 			local numTests, numSucceeded, Output = Joist.runTests(MockApis.Api2, MockTestsFolder, {
 				OutputMode = "ReturnTable",
 				OnlyTestSpecModules = false,
@@ -25,7 +24,7 @@ return function()
 			assert(numTests == 1)
 			assert(numSucceeded == 0)
 		end)
-		it("Fails if the action is not defined", function()
+		it("Fails if Player Names are not replicated to Clients", function()
 			local numTests, numSucceeded, Output = Joist.runTests(MockApis.Api3, MockTestsFolder, {
 				OutputMode = "ReturnTable",
 				OnlyTestSpecModules = false,
@@ -33,6 +32,6 @@ return function()
 
 			assert(numTests == 1)
 			assert(numSucceeded == 0)
-		end)--]]
+		end)
 	end)
 end
